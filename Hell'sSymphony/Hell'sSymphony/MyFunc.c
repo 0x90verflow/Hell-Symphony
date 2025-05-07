@@ -66,7 +66,6 @@ BOOL InitilizeNtdllConfig() {
     //  NT
     NtdllSt.pImgNtHdrs = (PIMAGE_NT_HEADERS)(uNtdll + NtdllSt.pImgDos->e_lfanew);
     if (NtdllSt.pImgNtHdrs->Signature != IMAGE_NT_SIGNATURE) {
-        printf("fuck\n");
         return FALSE;
     }
 
