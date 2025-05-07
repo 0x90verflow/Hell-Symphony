@@ -112,7 +112,7 @@ BOOL InitilizeSysFunc(CHAR* uSysFuncHash) {
                 if (*((PBYTE)sF.pAddress + j) == 0xC3 && !sF.pInst)
                     return FALSE;
 
-                // Recherche des instructions spécifiques
+                // find specific intructions
                 if (*((PBYTE)sF.pAddress + j + 0x00) == 0x4C &&
                     *((PBYTE)sF.pAddress + j + 0x01) == 0x8B &&
                     *((PBYTE)sF.pAddress + j + 0x02) == 0xD1 &&
@@ -121,10 +121,10 @@ BOOL InitilizeSysFunc(CHAR* uSysFuncHash) {
                     BYTE low = *((PBYTE)sF.pAddress + j + 0x04);
                     BYTE high = *((PBYTE)sF.pAddress + j + 0x05);
 
-                    // Récupérer le SSN
+                    // Getting the SSN
                     sF.wSSN = (high << 0x08) | low;
 
-                    // Recherche de l'adresse de l'instruction syscall
+                    // Finding syscall address
                     for (DWORD z = 0, x = 1; z <= RANGE; z++, x++) {
                         if (*((PBYTE)sF.pAddress + j + z) == 0x0F && *((PBYTE)sF.pAddress + j + x) == 0x05) {
                             sF.pInst = (sF.pAddress + j + z);
@@ -143,7 +143,7 @@ BOOL InitilizeSysFunc(CHAR* uSysFuncHash) {
             }
         }
     }
-    printf("Didnt find nothing\n");
+    printf("Didn't find nothing\n");
 
     return FALSE;
 }
@@ -151,10 +151,6 @@ BOOL InitilizeSysFunc(CHAR* uSysFuncHash) {
 
 
 
-/**
-* Mise en place de mes fonctions perso
-*
-**/
 
 void ToUpperCase(char* str) {
     while (*str) {
@@ -188,13 +184,13 @@ uint64_t Hashed(const char* String) {
 }
 
 
-// Convertit une chaîne WCHAR en CHAR et la met en majuscules
+//
 void WideCharToUpperChar(PWCHAR wString, PCHAR buffer, SIZE_T size) {
     if (!wString || !buffer) return;
     int len = WideCharToMultiByte(CP_ACP, 0, wString, -1, buffer, (int)size, NULL, NULL);
     if (len > 0) {
         for (int i = 0; i < len; i++) {
-            buffer[i] = (char)toupper(buffer[i]); // Convertir en majuscules
+            buffer[i] = (char)toupper(buffer[i]);
         }
     }
 }
