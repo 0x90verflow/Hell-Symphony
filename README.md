@@ -5,5 +5,5 @@ A malware designed to bypass Windows Defender using any kind of msfvenom shellco
 
 
 ### Further modifications will be implemented to ensure evasion against EDR solutions such as SentinelOne, CrowdStrike, Bitdefender, and others.
-### Further updates will be implemented to evade both static and dynamic analysis techniques commonly used in malware detection.
+### Further updates will also be implemented to evade both static and dynamic analysis techniques commonly used in malware detection.
     
