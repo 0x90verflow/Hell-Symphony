@@ -91,12 +91,11 @@ BOOL InitilizeNtdllConfig() {
 BOOL InitilizeSysFunc(CHAR* uSysFuncHash) {
 
     if (!uSysFuncHash) {
-        printf("Pas de parametre\n");
         return FALSE;
     }
 
     if (!NtdllSt.pNtdll && !InitilizeNtdllConfig()) {
-        printf("Probleme d'initialization de NTDLL\n");
+        printf("Issue while initializing NTDLL\n");
         return FALSE;
     }
 
