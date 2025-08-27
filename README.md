@@ -7,3 +7,5 @@ A malware designed to bypass Windows Defender using any kind of msfvenom shellco
 ##### Further modifications will be implemented to ensure evasion against EDR solutions such as SentinelOne, CrowdStrike, Bitdefender, and others.
 ##### Further updates will also be implemented to evade both static and dynamic analysis techniques commonly used in malware detection.
     
+At this time (27/08/2024), work against : Avast, Microsoft Defender, Crowdstrike Falcon, Malwarebytes, Palo Alto Networks, Trend Micro, etc
+-> Will get flag as suspicious with S1, Elastic, Symantec. 
